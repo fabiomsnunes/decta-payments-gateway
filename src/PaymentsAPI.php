@@ -214,7 +214,9 @@ class PaymentsAPI
     public function define_order_status_across_attempts($order, $payment_id)
     {
         $status = $this->define_order_status($order, $payment_id);
-        if ($status === OrderStatus::PAID) {
+        $main_status_code = $this->lastStatusCode;
+        // No answer for the main payment: return now so the caller can retry on getLastStatusCode() === 0.
+        if ($status === OrderStatus::PAID || $main_status_code === 0) {
             return $status;
         }
 
@@ -232,10 +234,13 @@ class PaymentsAPI
             if ($result['status'] == 'paid' || $result['status'] == 'withdrawn') {
                 $order->add_order_note(__(isset($_ENV['MESSAGE_SUCCESS_TRANSACTION']) ? $_ENV['MESSAGE_SUCCESS_TRANSACTION'] : ''));
                 $this->logger->info(sprintf("SUCCESS order #%s, paid on an earlier attempt, payment #%s", $order_number, $attempt_payment_id));
+                $this->lastStatusCode = $main_status_code;
                 return OrderStatus::PAID;
             }
         }
 
+        // The calls for the other attempts must not hide the result of the main one from getLastStatusCode().
+        $this->lastStatusCode = $main_status_code;
         return $status;
     }
 
