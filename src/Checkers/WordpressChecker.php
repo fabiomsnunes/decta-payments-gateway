@@ -1,0 +1,26 @@
+<?php
+
+namespace WooCommercePMG\Checkers;
+
+use WooCommercePMG\Notification;
+
+class WordpressChecker implements DefaultChecker
+{
+    public static function execute()
+    {
+        $plugin_name = isset($_ENV['PLUGIN_NAME']) ? $_ENV['PLUGIN_NAME'] : 'WooCommercePMG';
+        $needed_version = isset($_ENV['WORDPRESS_VERSION_MIN']) ? $_ENV['WORDPRESS_VERSION_MIN'] : '6.0.2';
+
+        global $wp_version;
+        if (version_compare($wp_version, $needed_version, '<')) {
+            $message = sprintf('%s requires Wordpress version more than %s. Please, update your site.', $plugin_name, $needed_version);
+
+            $obj_notification = new Notification();
+            $obj_notification->set_type(Notification::NOTIF_STYLE_ERROR);
+            $obj_notification->set_message($message);
+            Notification::add_notification_to_poll($obj_notification);
+            return false;
+        }
+        return true;
+    }
+}
