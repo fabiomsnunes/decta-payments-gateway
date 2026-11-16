@@ -4,7 +4,7 @@
  * Plugin Name: Decta Payments Gateway
  * Plugin URI: 
  * Description: DECTA can be easily integrated into the billing process of e-commerce websites and mobile apps. If your online store is using WooCommerce, download and set up this ready-made plugin.
- * Version: 3.9
+ * Version: 3.11
  * Requires at least: 3.0.0
  * Requires PHP: 7.0
  * Author: Decta
