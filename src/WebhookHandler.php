@@ -135,8 +135,11 @@ class WebhookHandler
 
         // Find order by transaction ID instead of order ID for better reliability
         $order = self::find_order_by_transaction_id($transactionsId);
+        // Found only by number: the webhook's payment is not recorded on the order, so it can't be checked directly.
+        $foundByNumberOnly = false;
         if (!($order instanceof \WC_Order)) {
             $order = self::find_order_by_number($orderNumber);
+            $foundByNumberOnly = $order instanceof \WC_Order;
         }
 
         if ($order instanceof \WC_Order) {
@@ -184,7 +187,7 @@ class WebhookHandler
         }
         // Only a payment can change the order from an older attempt; a failed or held older attempt
         // says nothing about the latest one, which the customer may still be paying.
-        if ($eventPaymentId !== (string)$order->get_transaction_id() && $status !== OrderStatus::PAID) {
+        if (($foundByNumberOnly || $eventPaymentId !== (string)$order->get_transaction_id()) && $status !== OrderStatus::PAID) {
             $logger->info("Webhook event {$eventId} belongs to an earlier, unpaid attempt, order status left unchanged");
             return WebhookEventRepository::STATUS_PROCESSED;
         }
