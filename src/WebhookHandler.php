@@ -135,6 +135,9 @@ class WebhookHandler
 
         // Find order by transaction ID instead of order ID for better reliability
         $order = self::find_order_by_transaction_id($transactionsId);
+        if (!($order instanceof \WC_Order)) {
+            $order = self::find_order_by_number($orderNumber);
+        }
 
         if ($order instanceof \WC_Order) {
             $logger->set_order_id($order->get_id());
@@ -153,7 +156,8 @@ class WebhookHandler
             $logger->error("Webhook event {$eventId} could not be applied, payment method mismatch");
             return \WooCommercePMG\Model\WebhookEventRepository::STATUS_FAILED;
         }
-        $orderTransactionId = $order->get_transaction_id();
+        // The webhook can belong to an earlier attempt than the one stored as the order's transaction_id.
+        $eventPaymentId = PaymentsAPI::get_payment_id_for_transactions_id($order, $transactionsId);
 
         $settings = get_option('woocommerce_' . self::get_plugin_id() . '_settings', array());
         $private = $settings['private-key'] ?? '';
@@ -161,7 +165,7 @@ class WebhookHandler
 
         $api = new PaymentsAPI($private, $public, $logger);
 
-        $status = $api->define_order_status($order, $orderTransactionId);
+        $status = $api->define_order_status_across_attempts($order, $eventPaymentId);
         if ($api->getLastStatusCode() === 0) {
             // Network/timeout or no HTTP response: schedule retry
             $repo = new WebhookEventRepository();
@@ -222,7 +226,7 @@ class WebhookHandler
      */
     private static function handle_webhook_hold_status(\WC_Order $order, Logger $logger): string
     {
-        if ($order->get_status() !== 'on-hold') {
+        if ($order->get_status() !== 'on-hold' && !$order->is_paid()) {
             // Stock will be reduced automatically via 'woocommerce_order_status_on-hold' hook
             $order->update_status('on-hold', __('Awaiting payment confirmation.'));
             $logger->info('Order status updated to on-hold via webhook');
@@ -258,7 +262,8 @@ class WebhookHandler
      */
     private static function handle_webhook_failed_status(\WC_Order $order, Logger $logger): string
     {
-        if ($order->get_status() !== 'failed') {
+        // A failed attempt never overrides an order that another attempt already paid.
+        if ($order->get_status() !== 'failed' && !$order->is_paid()) {
             $order->update_status('failed', __('ERROR: Payment failed.'));
             $logger->info('Order status updated to failed via webhook');
         }
@@ -311,15 +316,39 @@ class WebhookHandler
         // Find by custom 'transactions_id' meta field
         // This field is set in WooCommercePMG::process_payment() via:
         // $order->update_meta_data('transactions_id', $payment['transaction_details']['transactions_id'])
-        $orders = wc_get_orders([
-            'limit' => 1,
-            'meta_key' => 'transactions_id',
-            'meta_value' => $transactionId,
-            'payment_method' => self::get_plugin_id(), // Only search in PMG orders
-        ]);
+        // 'transactions_id' only holds the latest attempt; earlier attempts are kept one row each.
+        foreach (array('transactions_id', PaymentsAPI::ATTEMPT_TRANSACTIONS_ID_META) as $metaKey) {
+            $orders = wc_get_orders([
+                'limit' => 1,
+                'meta_key' => $metaKey,
+                'meta_value' => $transactionId,
+                'payment_method' => self::get_plugin_id(), // Only search in PMG orders
+            ]);
 
-        if (!empty($orders) && $orders[0] instanceof \WC_Order) {
-            return $orders[0];
+            if (!empty($orders) && $orders[0] instanceof \WC_Order) {
+                return $orders[0];
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * Fallback for webhooks whose transaction_id is not stored on any order,
+     * e.g. attempts created before payment attempts were recorded.
+     *
+     * @param string $orderNumber Order number sent by the gateway
+     * @return \WC_Order|false
+     */
+    private static function find_order_by_number(string $orderNumber)
+    {
+        if ($orderNumber === '' || !ctype_digit($orderNumber)) {
+            return false;
+        }
+
+        $order = wc_get_order((int)$orderNumber);
+        if ($order instanceof \WC_Order && (string)$order->get_order_number() === $orderNumber) {
+            return $order;
         }
 
         return false;

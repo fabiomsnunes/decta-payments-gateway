@@ -8,6 +8,17 @@ namespace WooCommercePMG;
 
 class PaymentsAPI
 {
+    /**
+     * Every payment request created for an order, as transactions_id => payment id.
+     * The order's transaction_id only keeps the latest attempt, but an earlier one can still be paid later.
+     */
+    public const ATTEMPTS_META = 'pmg_payment_attempts';
+
+    /**
+     * One row per attempt, so an order can be found by the transactions_id of any of its attempts.
+     */
+    public const ATTEMPT_TRANSACTIONS_ID_META = 'pmg_attempt_transactions_id';
+
     private $private_key            = false;
     private $public_key             = false;
 
@@ -190,6 +201,93 @@ class PaymentsAPI
 
             return OrderStatus::FAILED;
         }
+    }
+
+
+    /**
+     * Status of the given payment. When it is not paid, another attempt of the same order
+     * that was paid wins, so a late payment on an older payment page is never lost.
+     * @param \WC_Order $order
+     * @param string $payment_id
+     * @return string|null
+     */
+    public function define_order_status_across_attempts($order, $payment_id)
+    {
+        $status = $this->define_order_status($order, $payment_id);
+        if ($status === OrderStatus::PAID) {
+            return $status;
+        }
+
+        $order_number = (string)$order->get_order_number();
+        foreach (self::get_order_payment_ids($order) as $attempt_payment_id) {
+            if ($attempt_payment_id === (string)$payment_id) {
+                continue;
+            }
+
+            $result = $this->call('GET', sprintf('/api/' . $this->get_payments_api_ver() . '/orders/%s/', $attempt_payment_id));
+            if (!is_array($result) || !isset($result['number']) || (string)$result['number'] !== $order_number) {
+                continue;
+            }
+
+            if ($result['status'] == 'paid' || $result['status'] == 'withdrawn') {
+                $order->add_order_note(__(isset($_ENV['MESSAGE_SUCCESS_TRANSACTION']) ? $_ENV['MESSAGE_SUCCESS_TRANSACTION'] : ''));
+                $this->logger->info(sprintf("SUCCESS order #%s, paid on an earlier attempt, payment #%s", $order_number, $attempt_payment_id));
+                return OrderStatus::PAID;
+            }
+        }
+
+        return $status;
+    }
+
+    /**
+     * @param \WC_Order $order
+     * @param string $payment_id
+     * @param string $transactions_id
+     * @return void
+     */
+    public static function record_payment_attempt($order, $payment_id, $transactions_id)
+    {
+        if (empty($payment_id) || empty($transactions_id)) {
+            return;
+        }
+
+        $attempts = self::get_payment_attempts($order);
+        $attempts[(string)$transactions_id] = (string)$payment_id;
+        $order->update_meta_data(self::ATTEMPTS_META, $attempts);
+        $order->add_meta_data(self::ATTEMPT_TRANSACTIONS_ID_META, (string)$transactions_id);
+    }
+
+    /**
+     * @param \WC_Order $order
+     * @return array transactions_id => payment id
+     */
+    public static function get_payment_attempts($order)
+    {
+        $attempts = $order->get_meta(self::ATTEMPTS_META);
+        return is_array($attempts) ? $attempts : array();
+    }
+
+    /**
+     * Payment ids of every attempt of the order, the latest one included.
+     * @param \WC_Order $order
+     * @return string[]
+     */
+    public static function get_order_payment_ids($order)
+    {
+        $payment_ids = array_values(self::get_payment_attempts($order));
+        $payment_ids[] = (string)$order->get_transaction_id();
+        return array_values(array_unique(array_filter($payment_ids)));
+    }
+
+    /**
+     * @param \WC_Order $order
+     * @param string $transactions_id
+     * @return string
+     */
+    public static function get_payment_id_for_transactions_id($order, $transactions_id)
+    {
+        $attempts = self::get_payment_attempts($order);
+        return isset($attempts[$transactions_id]) ? $attempts[$transactions_id] : (string)$order->get_transaction_id();
     }
 
 

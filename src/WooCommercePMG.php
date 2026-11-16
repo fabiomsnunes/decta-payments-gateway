@@ -212,6 +212,7 @@ class WooCommercePMG extends \WC_Payment_Gateway
 
         $order->set_transaction_id($payment['id']);
         $order->update_meta_data('transactions_id', $payment['transaction_details']['transactions_id']);
+        PaymentsAPI::record_payment_attempt($order, $payment['id'], $payment['transaction_details']['transactions_id']);
         $order->save();
         $this->log->info("Added payment ID request to the session and to the order");
 
@@ -266,7 +267,7 @@ class WooCommercePMG extends \WC_Payment_Gateway
         //processing payment, checking payment status by the payment API
         require_once 'Constants.php';
         try {
-            $status = $obj_payment_api->define_order_status($order, $payment_id);
+            $status = $obj_payment_api->define_order_status_across_attempts($order, $payment_id);
             $this->process_order_status($order, $status);
         } catch (Exception $e) {
             $order->update_status('wc-failed', __('ERROR: Unexpected order status.'));
@@ -283,10 +284,11 @@ class WooCommercePMG extends \WC_Payment_Gateway
      */
     private function get_payment_id($order)
     {
-        if (!empty(\WC()->session->get($this->id.'_payment_id'))) {
-            $payment_id = \WC()->session->get($this->id.'_payment_id');
-            $this->log->info('Get new payment request from session - ' . $payment_id);
-            return $payment_id;
+        // The session keeps the customer's latest payment request, which can belong to another order.
+        $session_payment_id = \WC()->session->get($this->id.'_payment_id');
+        if (!empty($session_payment_id) && in_array($session_payment_id, PaymentsAPI::get_order_payment_ids($order), true)) {
+            $this->log->info('Get new payment request from session - ' . $session_payment_id);
+            return $session_payment_id;
         }
         
         if (!empty($order->get_transaction_id())) {
@@ -341,8 +343,8 @@ class WooCommercePMG extends \WC_Payment_Gateway
      */
     private function handle_hold_status($order)
     {
-        if ($order->get_status() === 'on-hold') {
-            return; // Already in the correct status
+        if ($order->get_status() === 'on-hold' || $order->is_paid()) {
+            return;
         }
         
         // Stock will be reduced automatically via 'woocommerce_order_status_on-hold' hook
@@ -371,7 +373,8 @@ class WooCommercePMG extends \WC_Payment_Gateway
      */
     private function handle_failed_status($order)
     {
-        if ($order->get_status() !== 'failed') {
+        // A failed attempt never overrides an order that another attempt already paid.
+        if ($order->get_status() !== 'failed' && !$order->is_paid()) {
             $order->update_status('failed', __('ERROR: Payment failed.'));
         }
     }
