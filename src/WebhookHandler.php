@@ -182,6 +182,13 @@ class WebhookHandler
 
             return WebhookEventRepository::STATUS_RETRY;
         }
+        // Only a payment can change the order from an older attempt; a failed or held older attempt
+        // says nothing about the latest one, which the customer may still be paying.
+        if ($eventPaymentId !== (string)$order->get_transaction_id() && $status !== OrderStatus::PAID) {
+            $logger->info("Webhook event {$eventId} belongs to an earlier, unpaid attempt, order status left unchanged");
+            return WebhookEventRepository::STATUS_PROCESSED;
+        }
+
         $statusResult = self::process_payment_status($order, $status, $logger);
 
         $logger->info('AS: webhook processing finished for order #' . $order->get_id());
